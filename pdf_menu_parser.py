@@ -11,11 +11,6 @@ def request():
     urllib.request.urlretrieve("https://www.catholic.ac.kr/cms/etcResourceOpen.do?site=$cms$NYeyA&key=$cms$MYQwLgFg9gNglsA+gIygOxAOgA4BMBmQA", "catholic_bona.pdf")
     print("This week's menu has been updated.")
 
-def update():
-    if os.path.isfile("catholic_pranzo.pdf") == False or os.path.isfile("catholic_bona.pdf") == False:
-        request()
-    if datetime.datetime.today().weekday() == 6:
-        request() #Auto update on Sunday
 
 def extract_text_from_pdf(pdf_path):
     """
@@ -257,8 +252,7 @@ def save_menu_to_json(menu_data, file_name):
     print(f"Menu data saved to {file_name}")
 
 def final():
-    request()
-    pdf_file_path = 'catholic_pranzo.pdf'  # Replace with the actual path to your PDF file
+    pdf_file_path = 'catholic_pranzo.pdf'
     extracted_text = extract_text_from_pdf(pdf_file_path)
     if extracted_text:
         cleaned_text = preprocess_text_first(extracted_text)
@@ -271,19 +265,24 @@ def final():
         print(f"Menu data saved to {output_file_path}")
 
     # Example usage for the second restaurant
-    pdf_file_path = 'catholic_bona.pdf'  # Replace with the actual path to your PDF file
-    extracted_text = extract_text_from_pdf(pdf_file_path)  # Use the existing extract_text_from_pdf_image function
+    pdf_file_path = 'catholic_bona.pdf'
+    extracted_text = extract_text_from_pdf(pdf_file_path)
     if extracted_text:
-        cleaned_text = preprocess_text_second(extracted_text)
-        menu_data = parse_second_restaurant_menu(cleaned_text)
+        cleaned_text = preprocess_text_first(extracted_text)
+        menu_data = parse_first_restaurant_menu(cleaned_text)
 
-        # Save the parsed menu data to Second_Restaurant.json
-        save_menu_to_json(menu_data, "Café_Bona.json")
+        # Save the parsed menu data to Café_Bona.json
+        output_file_path = "Café_Bona.json"
+        with open(output_file_path, "w", encoding="utf-8") as json_file:
+            json.dump(menu_data, json_file, indent=4, ensure_ascii=False)
+        print(f"Menu data saved to {output_file_path}")
     else:
         print("Failed to extract text from the PDF.")
-        
+
     #remove used pdf files
     os.remove("catholic_pranzo.pdf")
     os.remove("catholic_bona.pdf")
+    
 if __name__ == "__main__":
+    request()
     final()
