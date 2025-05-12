@@ -23,3 +23,15 @@ jobs:
 
       - name: Run script
         run: python pdf_menu_parser.py
+
+      - name: Archive Café Bona menus
+        uses: actions/upload-artifact@v4
+        with:
+          name: Café_Bona
+          path: ./Café_Bona.json
+
+      - name: Archive BuonPranzo menus
+        uses: actions/upload-artifact@v4
+        with:
+          name: Buon_Pranzo
+          path: Buon_Pranzo.json
