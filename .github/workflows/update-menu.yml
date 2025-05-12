@@ -5,6 +5,9 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push changes to the repository
+      pull-requests: write  # Required to create pull requests
 
     steps:
       - name: Checkout repo
