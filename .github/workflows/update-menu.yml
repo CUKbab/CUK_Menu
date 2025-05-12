@@ -1,14 +1,11 @@
-# .github/workflows/update-menu.yml
-name: Update Weekly Menu
+name: Python CI
 
-on:
-  schedule:
-    - cron: '0 0 * * 0'  # Every Sunday at 00:00 UTC
-  workflow_dispatch:    # Allow manual trigger
+on: [push, pull_request]
 
 jobs:
-  update-menu:
+  build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v3
@@ -16,22 +13,20 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        run: pip install pdfplumber
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run script
         run: python pdf_menu_parser.py
-
-      - name: Archive Café Bona menus
-        uses: actions/upload-artifact@v4
-        with:
-          name: Café_Bona
-          path: ./Café_Bona.json
-
-      - name: Archive BuonPranzo menus
-        uses: actions/upload-artifact@v4
-        with:
-          name: Buon_Pranzo
-          path: Buon_Pranzo.json
