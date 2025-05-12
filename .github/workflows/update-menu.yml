@@ -22,4 +22,4 @@ jobs:
         run: pip install pdfplumber
 
       - name: Run script
-        run: python script.py  # Replace with your filename
+        run: python pdf_menu_parser.py
