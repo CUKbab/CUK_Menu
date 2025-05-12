@@ -4,12 +4,10 @@ import json
 import urllib.request
 import os
 
-
 def request():
     urllib.request.urlretrieve("https://www.catholic.ac.kr/cms/etcResourceOpen.do?site=$cms$NYeyA&key=$cms$MYQwLgFg9gNglsA+gBwE4gHYC8oDpkAmAZkA", "catholic_pranzo.pdf")
     urllib.request.urlretrieve("https://www.catholic.ac.kr/cms/etcResourceOpen.do?site=$cms$NYeyA&key=$cms$MYQwLgFg9gNglsA+gIygOxAOgA4BMBmQA", "catholic_bona.pdf")
     print("This week's menu has been updated.")
-
 
 def extract_text_from_pdf(pdf_path):
     """
