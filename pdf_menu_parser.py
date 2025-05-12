@@ -259,7 +259,7 @@ def final():
         menu_data = parse_first_restaurant_menu(cleaned_text)
 
         # Save the parsed menu data to Buon_Pranzo.json
-        output_file_path = "Buon_Pranzo.json"
+        output_file_path = "./Buon_Pranzo.json"
         with open(output_file_path, "w", encoding="utf-8") as json_file:
             json.dump(menu_data, json_file, indent=4, ensure_ascii=False)
         print(f"Menu data saved to {output_file_path}")
@@ -272,7 +272,7 @@ def final():
         menu_data = parse_first_restaurant_menu(cleaned_text)
 
         # Save the parsed menu data to Café_Bona.json
-        output_file_path = "Café_Bona.json"
+        output_file_path = "./Café_Bona.json"
         with open(output_file_path, "w", encoding="utf-8") as json_file:
             json.dump(menu_data, json_file, indent=4, ensure_ascii=False)
         print(f"Menu data saved to {output_file_path}")
