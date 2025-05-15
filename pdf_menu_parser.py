@@ -265,8 +265,8 @@ def final():
     pdf_file_path = 'catholic_bona.pdf'
     extracted_text = extract_text_from_pdf(pdf_file_path)
     if extracted_text:
-        cleaned_text = preprocess_text_first(extracted_text)
-        menu_data = parse_first_restaurant_menu(cleaned_text)
+        cleaned_text = preprocess_text_second(extracted_text)
+        menu_data = parse_second_restaurant_menu(cleaned_text)
 
         # Save the parsed menu data to Café_Bona.json
         output_file_path = "./Café_Bona.json"
