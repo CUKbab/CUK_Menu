@@ -1,7 +1,7 @@
 name: Menu Update
 on:
   schedule:
-    - cron: '0 0 * * 1'  # Runs every Monday at 00:00 UTC
+    - cron: '0 0 * * 0'  # Runs every Monday at 00:00 UTC
   workflow_dispatch:  # Allows manual triggering of the workflow
   pull_request:
     types: [opened, synchronize]  # Runs on new PRs and PR updates
