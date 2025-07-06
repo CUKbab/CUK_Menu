@@ -89,7 +89,7 @@ def parse_second_restaurant_menu(text):
                   "Dinner": { ... }
               }
     """
-    menu_data = {"Lunch": {}, "Dinner": {}}
+    menu_data = {"Morning": {}, "Lunch": {}, "Dinner": {}}
     days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 
     # Initialize menu entries for each day and each meal
@@ -102,26 +102,19 @@ def parse_second_restaurant_menu(text):
 
     # Helper function to distribute menu items across meals and days
     def distribute_menu_items(menu_items):
-        lunch_day_index = 0  # Index for Lunch and Dinner (cycles every 5 days: Mon-Fri)
-        dinner_day_index = 0
-        current_meal = "Lunch"  # Start with Lunch
+        # Initialize Morning with "메뉴 없음~"
+        for i in range(5):  # Mon–Fri
+            menu_data["Morning"][days_of_week[i]].append("메뉴 없음~")
 
-        # Iterate through the menu items and distribute them
-        for i, item in enumerate(menu_items):
-            if current_meal == "Lunch":
-                #i+=1
-                # Fill Lunch menus (cycle every 5 days: Mon-Fri)
-                lunch_day_index = i % 5 # Cycle through 4 days (Mon-Thu)
-                menu_data["Lunch"][days_of_week[lunch_day_index]].append(item)
-                # Switch to Dinner after filling 30 Lunch items (6 items * 5 days)
-                if i == 35: # 7 items * 5 days = 35 items
-                    current_meal = "Dinner"
-                continue
+        # Lunch: first 35 items → 7 per weekday
+        for i in range(35):
+            day = days_of_week[i % 5]  # Mon–Fri cycling
+            menu_data["Lunch"][day].append(menu_items[i])
 
-            if current_meal == "Dinner":
-                i+=1
-                dinner_day_index = i % 5 # Cycle through 5 days (Mon-Fri)
-                menu_data["Dinner"][days_of_week[dinner_day_index]].append(item)
+        # Dinner: remaining items
+        for i in range(35, len(menu_items)):
+            day = days_of_week[(i - 35) % 5]  # Restart Mon–Fri cycle for Dinner
+            menu_data["Dinner"][day].append(menu_items[i])
 
     # Distribute menu items
     distribute_menu_items(menu_items)
