@@ -94,7 +94,7 @@ def parse_second_restaurant_menu(text, is_vacation=False, vacation_range=None):
 
     if is_vacation:
         for day in days_of_week:
-            menu_data["Morning"][day] = ["여름 방학 중 미운영"]
+            menu_data["Morning"][day] = ["방학 중 미운영"]
         current_meal = "Lunch"
         for i, item in enumerate(menu_items):
             if current_meal == "Lunch":
