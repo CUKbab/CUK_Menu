@@ -1,4 +1,4 @@
-_name: Menu Update
+name: Menu Update
 on:
   schedule:
     - cron: '0 15 * * 0' # Runs every Sunday at 15:00 UTC, which is Monday 00:00 KST
