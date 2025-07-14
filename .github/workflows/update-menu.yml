@@ -1,4 +1,4 @@
-name: Menu Update
+_name: Menu Update
 on:
   schedule:
     - cron: '0 15 * * 0' # Runs every Sunday at 15:00 UTC, which is Monday 00:00 KST
@@ -38,7 +38,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run script
-        run: python pdf_parser.py
+        run: python pdf_menu_parser.py
 
       - name: Commit and push JSON files
         env:
