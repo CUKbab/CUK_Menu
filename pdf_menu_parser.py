@@ -27,6 +27,11 @@ def is_bona_morning_vacation(text):
     # NEW: Detect if "아침" (Morning) section is completely missing from the table
     return "아침" not in text
 
+
+def is_bona_special_vacation(text):
+    return "집중휴무기간" in text
+
+
 def extract_vacation_range(text):
     match = re.search(r'\d{1,2}/\d{1,2}\(?.*?\)?\s*~\s*\d{1,2}/\d{1,2}\(?.*?\)?', text)
     return match.group(0) if match else None
@@ -148,13 +153,21 @@ def final():
     if text:
         cleaned = preprocess_text_second(text)
         is_vacation = is_bona_morning_vacation(text)
+        is_special_vacation = is_bona_special_vacation(text)
         menu_data = parse_second_restaurant_menu(cleaned, is_vacation, extract_vacation_range(text) if is_vacation else None)
+        
+        if "metadata" not in menu_data:
+            menu_data["metadata"] = {}
+
         if is_vacation:
-            if "metadata" not in menu_data:
-                menu_data["metadata"] = {}
             menu_data["metadata"]["morningVacation"] = True
             menu_data["metadata"]["vacationMessageMorning"] = "여름 방학 중 미운영"
             menu_data["metadata"]["vacationPeriod"] = extract_vacation_range(text) or ""
+        
+        if is_special_vacation:
+            menu_data["metadata"]["isSpecialVacation"] = True
+            menu_data["metadata"]["specialVacationMessage"] = "집중휴무기간"
+            
         save_menu_to_json(menu_data, "./Café_Bona.json")
 
     os.remove("catholic_pranzo.pdf")

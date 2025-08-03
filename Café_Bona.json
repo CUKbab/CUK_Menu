@@ -41,6 +41,8 @@
     "metadata": {
         "morningVacation": true,
         "vacationMessageMorning": "여름 방학 중 미운영",
-        "vacationPeriod": ""
+        "vacationPeriod": "",
+        "isSpecialVacation": true,
+        "specialVacationMessage": "집중휴무기간"
     }
 }
