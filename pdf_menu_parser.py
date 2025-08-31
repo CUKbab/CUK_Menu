@@ -66,7 +66,7 @@ def preprocess_text_second(text):
     return "\n".join(cleaned_lines)
 
 def parse_first_restaurant_menu(text):
-    menu_data = {"Global Noodle": {}, "One Plate": {}, "metadata": {"isVacation": False}}
+    menu_data = {"Global Noodle": {}, "One Plate": {}, "metadata": {"isVacation": False, "vacationMessage": "", "vacationPeriod": ""}}
     days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri"]
 
     # Only initialize day slots for food sections, not metadata
