@@ -97,6 +97,7 @@ def parse_first_restaurant_menu(text):
 
     return menu_data
 
+
 def parse_second_restaurant_menu(text, is_vacation=False, vacation_range=None):
     menu_data = {"Morning": {}, "Lunch": {}, "Dinner": {}}
     days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri"]
