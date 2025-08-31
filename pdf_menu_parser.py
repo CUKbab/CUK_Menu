@@ -25,7 +25,8 @@ def is_buon_pranzo_vacation(text):
 
 def is_bona_morning_vacation(text):
     # NEW: Detect if "아침" (Morning) section is completely missing from the table
-    return "아침" not in text
+    #return "아침" not in text
+    return False
 
 
 def is_bona_special_vacation(text):
@@ -65,27 +66,37 @@ def preprocess_text_second(text):
     return "\n".join(cleaned_lines)
 
 def parse_first_restaurant_menu(text):
-    menu_data = {"Global Noodle": {}, "One Plate": {}}
+    menu_data = {"Global Noodle": {}, "One Plate": {}, "metadata": {"isVacation": False}}
     days_of_week = ["Mon", "Tue", "Wed", "Thu", "Fri"]
-    for section in menu_data:
+
+    # Only initialize day slots for food sections, not metadata
+    for section in ["Global Noodle", "One Plate"]:
         for day in days_of_week:
             menu_data[section][day] = []
+
     global_noodle_lines, one_plate_lines = [], []
     current_section = "Global Noodle"
+
     for line in text.strip().split('\n'):
-        if not line.strip(): continue
-        if "점심" in line:
+        if not line.strip():
+            continue
+        if "점심" in line:  # Switch section
             current_section = "One Plate"
             continue
         (global_noodle_lines if current_section == "Global Noodle" else one_plate_lines).append(line.strip())
+
     global_noodle_menu = " ".join(global_noodle_lines).split(" ")
     one_plate_menu = " ".join(one_plate_lines).split(" ")
+
     def distribute(menu, section):
         for i, item in enumerate(menu):
             menu_data[section][days_of_week[i % 5]].append(item)
+
     distribute(global_noodle_menu, "Global Noodle")
     distribute(one_plate_menu, "One Plate")
+
     return menu_data
+
 
 def parse_second_restaurant_menu(text, is_vacation=False, vacation_range=None):
     menu_data = {"Morning": {}, "Lunch": {}, "Dinner": {}}
@@ -163,10 +174,14 @@ def final():
             menu_data["metadata"]["morningVacation"] = True
             menu_data["metadata"]["vacationMessageMorning"] = "여름 방학 중 미운영"
             menu_data["metadata"]["vacationPeriod"] = extract_vacation_range(text) or ""
+        else:
+            menu_data["metadata"]["morningVacation"] = False
         
         if is_special_vacation:
             menu_data["metadata"]["isSpecialVacation"] = True
             menu_data["metadata"]["specialVacationMessage"] = "집중휴무기간"
+        else:
+            menu_data["metadata"]["isSpecialVacation"] = False
             
         save_menu_to_json(menu_data, "./Café_Bona.json")
 
