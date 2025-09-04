@@ -133,11 +133,11 @@ def parse_second_restaurant_menu(text, is_vacation=False, vacation_range=None):
                 continue
             if current_meal == "Lunch":
                 menu_data["Lunch"][days_of_week[(i - 24) % 5]].append(item)
-                if i == 59:
+                if i == 58:
                     current_meal = "Dinner"
                 continue
             if current_meal == "Dinner":
-                menu_data["Dinner"][days_of_week[(i - 60) % 5]].append(item)
+                menu_data["Dinner"][days_of_week[(i - 59) % 5]].append(item)
     return menu_data
 
 def final():
