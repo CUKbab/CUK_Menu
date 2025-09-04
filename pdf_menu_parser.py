@@ -24,13 +24,17 @@ def is_buon_pranzo_vacation(text):
     return "방학 중 미운영" in text or ("방학" in text and "미운영" in text)
 
 def is_bona_morning_vacation(text):
-    # NEW: Detect if "아침" (Morning) section is completely missing from the table
-    #return "아침" not in text
-    return False
+    if text.count("kcal") == 10:
+        return True
+    else:
+        return False
 
 
 def is_bona_special_vacation(text):
-    return "집중휴무기간" in text
+    if text.count("kcal") != 0:
+        return False
+    else:
+        return True
 
 
 def extract_vacation_range(text):
@@ -165,7 +169,7 @@ def final():
         is_vacation = is_bona_morning_vacation(text)
         is_special_vacation = is_bona_special_vacation(text)
         menu_data = parse_second_restaurant_menu(cleaned, is_vacation, extract_vacation_range(text) if is_vacation else None)
-        
+
         if "metadata" not in menu_data:
             menu_data["metadata"] = {}
 
