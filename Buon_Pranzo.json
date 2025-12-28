@@ -74,7 +74,7 @@
         ]
     },
     "metadata": {
-        "isVacation": false,
+        "isVacation":true,
         "vacationMessage": "",
         "vacationPeriod": ""
     }
