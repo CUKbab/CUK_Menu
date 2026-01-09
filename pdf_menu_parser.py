@@ -21,7 +21,7 @@ def extract_text_from_pdf(pdf_path):
         return ""
 
 def is_buon_pranzo_vacation(text):
-    return "방학 중 미운영" in text or ("방학" in text and "미운영" in text)
+    return "방학 중 미운영" in text or ("방학" in text and "미운영" in text) or True
 
 
 def is_bona_morning_vacation(text):
