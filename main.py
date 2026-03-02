@@ -57,9 +57,11 @@ def extract_kcal(items: list) -> tuple:
 
 def build_menu_str(items: list, kcal: str = "") -> str:
     parts = [i for i in items if i]
-    result = ", ".join(parts)
+    result = parts[0] if parts else ""
+    for part in parts[1:]:
+        result += f",\n{part}"
     if kcal:
-        result += f" ({kcal})"
+        result += f"\n({kcal})"
     return result + " "
 
 
