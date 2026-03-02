@@ -135,12 +135,12 @@ def parse_menu_pdf(pdf_path: str) -> dict:
         return {d: "No Menu " for d in dates}
 
     result = {
-        "천원의아침": no_menu(),
-        "프란조 (2층) - 한식": no_menu(),
-        "프란조 (2층) - Global Noodle": no_menu(),
-        "프란조 (2층) - 플러스코너": no_menu(),
-        "프란조 (2층) - 석식": no_menu(),
-        "보나 (1층) - 덮밥": no_menu(),
+        "Morning": no_menu(),
+        "Pranzo-Korean": no_menu(),
+        "Pranzo-Global-Noodle": no_menu(),
+        "Pranzo-Plus-Corner": no_menu(),
+        "Pranzo-Dinner": no_menu(),
+        "Bona-Rice-Bowl": no_menu(),
     }
 
     def fill_section(section_key, main_row, rest_row, kcal_row):
@@ -160,19 +160,19 @@ def parse_menu_pdf(pdf_path: str) -> dict:
             )
 
     # Row indices based on inspected table structure
-    fill_section("천원의아침",                   day_cells(table[1]),  day_cells(table[2]),  day_cells(table[3]))
-    fill_section("프란조 (2층) - 한식",          day_cells(table[4]),  day_cells(table[5]),  day_cells(table[6]))
-    fill_section("프란조 (2층) - Global Noodle", day_cells(table[7]),  day_cells(table[8]),  day_cells(table[9]))
-    fill_section("프란조 (2층) - 석식",          day_cells(table[11]), day_cells(table[12]), day_cells(table[13]))
+    fill_section("Morning",                   day_cells(table[1]),  day_cells(table[2]),  day_cells(table[3]))
+    fill_section("Pranzo-Korean",          day_cells(table[4]),  day_cells(table[5]),  day_cells(table[6]))
+    fill_section("Pranzo-Global-Noodle", day_cells(table[7]),  day_cells(table[8]),  day_cells(table[9]))
+    fill_section("Pranzo-Dinner",          day_cells(table[11]), day_cells(table[12]), day_cells(table[13]))
 
     # 플러스코너: single item per day (row 10)
     plus_row = day_cells(table[10])
     for i, date in enumerate(dates):
         if i in holiday_indices:
-            result["프란조 (2층) - 플러스코너"][date] = "No Menu "
+            result["Pranzo-Plus-Corner"][date] = "No Menu "
             continue
         item = clean(plus_row[i])
-        result["프란조 (2층) - 플러스코너"][date] = (item + " ") if item else "No Menu "
+        result["Pranzo-Plus-Corner"][date] = (item + " ") if item else "No Menu "
 
     # 보나 덮밥: main (row 14) + rest (row 15) + drink/kcal dynamically from page 2
     # Page 2 lists drinks and kcals only for active (non-holiday) days, in order
@@ -187,7 +187,7 @@ def parse_menu_pdf(pdf_path: str) -> dict:
         drink    = page2_drinks[slot] if slot < len(page2_drinks) else ""
         kcal_str = page2_kcals[slot]  if slot < len(page2_kcals)  else ""
         all_items = ([main] if main else []) + rest + ([drink] if drink else [])
-        result["보나 (1층) - 덮밥"][date] = (
+        result["Bona-Rice-Bowl"][date] = (
             build_menu_str(all_items, kcal_str) if all_items else "No Menu "
         )
 
