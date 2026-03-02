@@ -13,13 +13,13 @@ import os
 
 # The section labels as they appear in the PDF (column 0 / 1 cells)
 SECTION_MAP = {
-    "천원의아침": "천원의아침",
-    "한식": "프란조 (2층) - 한식",
-    "Global\nNoodle": "프란조 (2층) - Global Noodle",
-    "누들": "프란조 (2층) - Global Noodle",   # alt text
-    "플러스코너": "프란조 (2층) - 플러스코너",
-    "석식": "프란조 (2층) - 석식",
-    "덮밥": "보나 (1층) - 덮밥",
+    "천원의아침": "1000-won-Morning",
+    "한식": "Pranzo-Korean",
+    "Global\nNoodle": "Pranzo-Global-Noodle",
+    "누들": "Pranzo-Global-Noodle",   # alt text
+    "플러스코너": "Pranzo-Plus-Corner",
+    "석식": "Pranzo-Dinner",
+    "덮밥": "Bona-Rice-bowl",
 }
 
 # Days in order (Mon-Fri); dates are determined from the PDF title row
