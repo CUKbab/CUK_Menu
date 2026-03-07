@@ -1,8 +1,11 @@
 """
 Parser for Catholic University cafeteria weekly menu PDF -> JSON
-Usage: python parse_menu.py [pdf_path] [output_json_path]
+Downloads two PDFs (pranzo + bona), parses them, saves latest.json and archive.
 
-Run without arguments to auto-download this week's PDF, parse it, and delete it.
+Usage:
+  python main.py                                        # auto-download both
+  python main.py <pranzo.pdf> <bona.pdf>                # local files, default output
+  python main.py <pranzo.pdf> <bona.pdf> <out.json>     # local files, custom output
 """
 
 import json
@@ -11,10 +14,13 @@ import re
 import sys
 import urllib.request
 import urllib.error
+from datetime import datetime, timedelta
 
-PDF_URL     = "https://www.catholic.ac.kr/cms/etcResourceOpen.do?site=$cms$NYeyA&key=$cms$MYQwLgFg9gNglsA+gBwE4gHYC8oDpkAmAZkA"
-DEFAULT_PDF = "catholic_pranzo.pdf"
-DEFAULT_OUT = "parsed_menu.json"
+PRANZO_URL  = "https://www.catholic.ac.kr/cms/etcResourceOpen.do?site=$cms$NYeyA&key=$cms$MYQwLgFg9gNglsA+gBwE4gHYC8oDpkAmAZkA"
+BONA_URL    = "https://www.catholic.ac.kr/cms/etcResourceOpen.do?site=$cms$NYeyA&key=$cms$MYQwLgFg9gNglsA+gIygOxAOgA4BMBmQA"
+PRANZO_PDF  = "catholic_pranzo.pdf"
+BONA_PDF    = "catholic_bona.pdf"
+DEFAULT_OUT = "latest.json"
 
 
 # ── Download ───────────────────────────────────────────────────────────────
@@ -32,6 +38,22 @@ def download_pdf(url: str, dest: str, timeout: int = 15) -> None:
     print(f"Downloaded -> {dest}")
 
 
+# ── Archive / save ─────────────────────────────────────────────────────────
+
+def get_archive_path(dates: list) -> str:
+    first_date = datetime.strptime(dates[0], "%Y-%m-%d")
+    monday = first_date - timedelta(days=first_date.weekday())
+    year, week, _ = monday.isocalendar()
+    return os.path.join("menus", str(year), str(week), "menu.json")
+
+
+def save_json(data: dict, path: str) -> None:
+    os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    print(f"Saved    -> {path}")
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 def clean(cell) -> str:
@@ -45,7 +67,7 @@ def cell_items(cell) -> list:
 
 
 def extract_kcal(items: list) -> tuple:
-    """Pop a kcal string from item list; return (kcal_str, remaining_items)."""
+    """Pop kcal token from item list; return (kcal_str, remaining_items)."""
     kcal, rest = "", []
     for item in items:
         if re.match(r"^\d+kcal$", item):
@@ -57,57 +79,19 @@ def extract_kcal(items: list) -> tuple:
 
 def build_menu_str(items: list, kcal: str = "") -> str:
     parts = [i for i in items if i]
-    result = parts[0] if parts else ""
-    for part in parts[1:]:
-        result += f"\n{part}"
+    result = ", ".join(parts)
     if kcal:
-        result += f"\n({kcal})"
+        result += f" ({kcal})"
     return result + " "
 
 
-# ── Page 2 parsing (drinks + kcal for 보나) ────────────────────────────────
-
-def parse_page2(pdf) -> tuple:
+def parse_dates(table, raw_text) -> tuple:
     """
-    Dynamically parses drinks and kcals for 보나 from page 2.
-    The drink line is the line immediately before the kcal line.
-    Returns (drinks: list[str], kcals: list[str]) for active (non-holiday) days.
+    Extract dates and holiday column indices from the header row.
+    Returns (dates: list[str], data_col_start: int, holiday_indices: set[int])
     """
-    text = pdf.pages[1].extract_text() or ""
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-
-    drinks, kcals = [], []
-    for idx, line in enumerate(lines):
-        # kcal line: contains only "NNNkcal" tokens
-        if re.match(r"^(\d{3,4}kcal\s*)+$", line):
-            kcals = [f"{k}kcal" for k in re.findall(r"(\d{3,4})kcal", line)]
-            # The drink line is immediately above the kcal line
-            if idx > 0:
-                drinks = lines[idx - 1].split()
-            break
-
-    return drinks[:4], kcals[:4]
-
-
-# ── Core parser ────────────────────────────────────────────────────────────
-
-def parse_menu_pdf(pdf_path: str) -> dict:
-    import pdfplumber
-
-    with pdfplumber.open(pdf_path) as pdf:
-        page = pdf.pages[0]
-        raw_text = page.extract_text() or ""
-        tables = page.extract_tables()
-        page2_drinks, page2_kcals = parse_page2(pdf)
-
-    if not tables:
-        raise ValueError("No tables found in PDF.")
-
-    table = tables[0]
-
-    # ── Dates ──────────────────────────────────────────────────────────────
     year_match = re.search(r"(\d{4})\.", raw_text)
-    year = year_match.group(1) if year_match else "2026"
+    year = year_match.group(1) if year_match else str(datetime.now().year)
 
     date_cols = []
     for col_idx, cell in enumerate(table[0]):
@@ -121,17 +105,65 @@ def parse_menu_pdf(pdf_path: str) -> dict:
     dates = [d for _, d in date_cols]
     data_col_start = date_cols[0][0]
 
-    def day_cells(row):
-        return [row[data_col_start + i] if (data_col_start + i) < len(row) else None
-                for i in range(len(dates))]
-
-    # ── Holiday detection: scan early rows for "대체공휴일" per column ───────
-    holiday_indices: set = set()
+    # Detect holidays by scanning first few rows for "대체공휴일"
+    holiday_indices = set()
     for row in table[1:6]:
         for i in range(len(dates)):
             col = data_col_start + i
             if col < len(row) and row[col] and "대체공휴일" in str(row[col]):
                 holiday_indices.add(i)
+
+    return dates, data_col_start, holiday_indices
+
+
+def make_day_cells(table, data_col_start, n_dates):
+    """Return a safe row accessor: safe(row_idx) -> list of n_dates cells."""
+    def day_cells(row):
+        return [row[data_col_start + i] if (data_col_start + i) < len(row) else None
+                for i in range(n_dates)]
+
+    def safe(row_idx):
+        if row_idx >= len(table):
+            return [None] * n_dates
+        return day_cells(table[row_idx])
+
+    return safe
+
+
+# ── Pranzo parser ──────────────────────────────────────────────────────────
+
+def parse_pranzo(pdf_path: str) -> tuple:
+    """
+    Parse catholic_pranzo.pdf.
+    Table layout (this week):
+      ROW 00: header (dates)
+      ROW 01: 천원의아침 - main dish
+      ROW 02: 천원의아침 - remaining items (kcal may be embedded)
+      ROW 03: 천원의아침 - kcal row
+      ROW 04: 한식 - main dish
+      ROW 05: 한식 - remaining items
+      ROW 06: 한식 - kcal
+      ROW 07: Global Noodle - main dish
+      ROW 08: Global Noodle - remaining items
+      ROW 09: Global Noodle - kcal
+      ROW 10: 플러스코너 - single item
+      ROW 11: 석식 - main dish
+      ROW 12: 석식 - remaining items (kcal embedded)
+    Returns (result: dict, dates: list)
+    """
+    import pdfplumber
+
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        raw_text = page.extract_text() or ""
+        tables = page.extract_tables()
+
+    if not tables:
+        raise ValueError(f"No tables found in {pdf_path}")
+
+    table = tables[0]
+    dates, data_col_start, holiday_indices = parse_dates(table, raw_text)
+    safe = make_day_cells(table, data_col_start, len(dates))
 
     def no_menu():
         return {d: "No Menu " for d in dates}
@@ -142,13 +174,12 @@ def parse_menu_pdf(pdf_path: str) -> dict:
         "Pranzo-Global-Noodle": no_menu(),
         "Pranzo-Plus-Corner": no_menu(),
         "Pranzo-Dinner": no_menu(),
-        "Bona-Rice-Bowl": no_menu(),
     }
 
-    def fill_section(section_key, main_row, rest_row, kcal_row):
+    def fill_section(key, main_row, rest_row, kcal_row):
         for i, date in enumerate(dates):
             if i in holiday_indices:
-                result[section_key][date] = "No Menu"
+                result[key][date] = "No Menu"
                 continue
             main = clean(main_row[i])
             rest = cell_items(rest_row[i])
@@ -157,37 +188,75 @@ def parse_menu_pdf(pdf_path: str) -> dict:
             kcal_num = re.sub(r"\D", "", kcal_raw)
             kcal_str = f"{kcal_num}kcal" if kcal_num else ""
             all_items = ([main] if main else []) + rest
-            result[section_key][date] = (
-                build_menu_str(all_items, kcal_str) if all_items else "No Menu"
-            )
+            result[key][date] = build_menu_str(all_items, kcal_str) if all_items else "No Menu"
 
-    # Row indices based on inspected table structure
-    fill_section("Morning",                   day_cells(table[1]),  day_cells(table[2]),  day_cells(table[3]))
-    fill_section("Pranzo-Korean",          day_cells(table[4]),  day_cells(table[5]),  day_cells(table[6]))
-    fill_section("Pranzo-Global-Noodle", day_cells(table[7]),  day_cells(table[8]),  day_cells(table[9]))
-    fill_section("Pranzo-Dinner",          day_cells(table[11]), day_cells(table[12]), day_cells(table[13]))
+    fill_section("Morning",                   safe(1),  safe(2),  safe(3))
+    fill_section("Pranzo-Korean",          safe(4),  safe(5),  safe(6))
+    fill_section("Pranzo-Global-Noodle", safe(7),  safe(8),  safe(9))
 
-    # 플러스코너: single item per day (row 10)
-    plus_row = day_cells(table[10])
+    # 플러스코너: single item (row 10)
     for i, date in enumerate(dates):
         if i in holiday_indices:
             result["Pranzo-Plus-Corner"][date] = "No Menu "
             continue
-        item = clean(plus_row[i])
+        item = clean(safe(10)[i])
         result["Pranzo-Plus-Corner"][date] = (item + " ") if item else "No Menu "
 
-    # 보나 덮밥: main (row 14) + rest (row 15) + drink/kcal dynamically from page 2
-    # Page 2 lists drinks and kcals only for active (non-holiday) days, in order
-    main_row = day_cells(table[14])
-    rest_row = day_cells(table[15])
-    active_days = [i for i in range(len(dates)) if i not in holiday_indices]
+    # 석식: main (row 11) + rest with embedded kcal (row 12), no separate kcal row
+    fill_section("Pranzo-Dinner", safe(11), safe(12), [None] * len(dates))
 
-    for slot, i in enumerate(active_days):
-        date = dates[i]
-        main     = clean(main_row[i])
-        rest     = cell_items(rest_row[i])
-        drink    = page2_drinks[slot] if slot < len(page2_drinks) else ""
-        kcal_str = page2_kcals[slot]  if slot < len(page2_kcals)  else ""
+    return result, dates
+
+
+# ── Bona parser ────────────────────────────────────────────────────────────
+
+def parse_bona(pdf_path: str, dates: list, holiday_indices: set) -> dict:
+    """
+    Parse catholic_bona.pdf.
+    Table layout:
+      ROW 00: main dish per day (header row has no date labels — days match pranzo order)
+      ROW 01: remaining items (multi-line)
+      ROW 02: drink
+      ROW 03: kcal
+    Returns partial result dict with just "보나 (1층) - 덮밥".
+    """
+    import pdfplumber
+
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        raw_text = page.extract_text() or ""
+        tables = page.extract_tables()
+
+    if not tables:
+        raise ValueError(f"No tables found in {pdf_path}")
+
+    table = tables[0]
+
+    # Bona PDF has no date labels in header — data always starts at col 3
+    data_col_start = 3
+
+    def day_cells(row):
+        return [row[data_col_start + i] if (data_col_start + i) < len(row) else None
+                for i in range(len(dates))]
+
+    def safe(row_idx):
+        if row_idx >= len(table):
+            return [None] * len(dates)
+        return day_cells(table[row_idx])
+
+    result = {"Bona-Rice-Bowl": {d: "No Menu " for d in dates}}
+
+    for i, date in enumerate(dates):
+        if i in holiday_indices:
+            result["Bona-Rice-Bowl"][date] = "No Menu"
+            continue
+        main  = clean(safe(0)[i])
+        rest  = cell_items(safe(1)[i])
+        drink = clean(safe(2)[i])
+        kcal_raw = clean(safe(3)[i])
+        kcal_num = re.sub(r"\D", "", kcal_raw)
+        kcal_str = f"{kcal_num}kcal" if kcal_num else ""
+
         all_items = ([main] if main else []) + rest + ([drink] if drink else [])
         result["Bona-Rice-Bowl"][date] = (
             build_menu_str(all_items, kcal_str) if all_items else "No Menu "
@@ -200,25 +269,41 @@ def parse_menu_pdf(pdf_path: str) -> dict:
 
 def main():
     auto_download = len(sys.argv) == 1
-    pdf_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PDF
-    out_path  = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_OUT
+    pranzo_path = sys.argv[1] if len(sys.argv) > 1 else PRANZO_PDF
+    bona_path   = sys.argv[2] if len(sys.argv) > 2 else BONA_PDF
+    out_path    = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_OUT
 
     if auto_download:
-        download_pdf(PDF_URL, pdf_path)
+        download_pdf(PRANZO_URL, pranzo_path)
+        download_pdf(BONA_URL,   bona_path)
 
     try:
-        print(f"Parsing: {pdf_path}")
-        data = parse_menu_pdf(pdf_path)
+        print(f"Parsing: {pranzo_path}")
+        pranzo_data, dates = parse_pranzo(pranzo_path)
+
+        # Reuse holiday detection from pranzo for bona
+        import pdfplumber
+        with pdfplumber.open(pranzo_path) as pdf:
+            table = pdf.pages[0].extract_tables()[0]
+            raw_text = pdf.pages[0].extract_text() or ""
+        _, _, holiday_indices = parse_dates(table, raw_text)
+
+        print(f"Parsing: {bona_path}")
+        bona_data = parse_bona(bona_path, dates, holiday_indices)
+
     finally:
-        # Always clean up the downloaded file, even if parsing fails
-        if auto_download and os.path.exists(pdf_path):
-            os.remove(pdf_path)
-            print(f"Deleted  -> {pdf_path}")
+        if auto_download:
+            for path in [pranzo_path, bona_path]:
+                if os.path.exists(path):
+                    os.remove(path)
+                    print(f"Deleted  -> {path}")
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # Merge both results
+    data = {**pranzo_data, **bona_data}
 
-    print(f"Saved    -> {out_path}\n")
+    save_json(data, out_path)
+    save_json(data, get_archive_path(dates))
+
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
