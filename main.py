@@ -214,10 +214,11 @@ def parse_bona(pdf_path: str, dates: list, holiday_indices: set) -> dict:
     """
     Parse catholic_bona.pdf.
     Table layout:
-      ROW 00: main dish per day (header row has no date labels — days match pranzo order)
-      ROW 01: remaining items (multi-line)
-      ROW 02: drink
-      ROW 03: kcal
+      ROW 00: header row (date labels: 04/20(월), 04/21(화), …)
+      ROW 01: main dish per day
+      ROW 02: remaining items (multi-line)
+      ROW 03: drink
+      ROW 04: kcal
     Returns partial result dict with just "보나 (1층) - 덮밥".
     """
     import pdfplumber
@@ -250,10 +251,10 @@ def parse_bona(pdf_path: str, dates: list, holiday_indices: set) -> dict:
         if i in holiday_indices:
             result["Bona-Rice-Bowl"][date] = "No Menu"
             continue
-        main  = clean(safe(0)[i])
-        rest  = cell_items(safe(1)[i])
-        drink = clean(safe(2)[i])
-        kcal_raw = clean(safe(3)[i])
+        main  = clean(safe(1)[i])
+        rest  = cell_items(safe(2)[i])
+        drink = clean(safe(3)[i])
+        kcal_raw = clean(safe(4)[i])
         kcal_num = re.sub(r"\D", "", kcal_raw)
         kcal_str = f"{kcal_num}kcal" if kcal_num else ""
 
