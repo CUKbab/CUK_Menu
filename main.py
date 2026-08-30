@@ -7,20 +7,19 @@ Usage:
   python main.py <pranzo.pdf> <bona.pdf>                # local files, default output
   python main.py <pranzo.pdf> <bona.pdf> <out.json>     # local files, custom output
 
-Layout history
---------------
-Layout A — "old normal" (13 rows, dates in row 0):
-  Sections: 천원의아침, 한식, Global Noodle, 플러스코너, 석식  +  separate Bona PDF
-  Detection: len(table) >= 13 AND row 0 has date headers AND row 3 has kcal values
-
-Layout B — "vacation/break" (14 rows, dates in row 0, row 3 empty):
-  Same sections as A but condensed — 천원의아침 kcal merged into row 2,
-  석식 gains its own kcal row at row 13.  Bona PDF shrinks to 3 rows.
-  Detection: len(table) >= 13 AND row 0 has date headers AND row 3 is all-empty
-
-Layout C — "new normal" (10 rows, title in row 0, dates in row 1):
-  Sections: 중식, 석식 only.  Both PDFs are identical; bona is ignored.
-  Detection: row 0 contains title text (주 간 메 뉴 표 / 가톨릭대) and no date headers
+Note on layout auto-detection:
+  The university serves two different cafeteria menu layouts:
+    - "multi" layout: several sections in one table (Morning / Korean /
+      Global Noodle / Plus Corner / Dinner) -> the "부오프란조" cafeteria.
+    - "simple" layout: a single section, one dish per day (e.g. the
+      "ONE X PLATE" lunch menu) -> "Bona-Rice-Bowl".
+  Historically the "multi" layout lived in the pranzo PDF and the "simple"
+  layout lived in the bona PDF, but the university has since swapped which
+  physical file (pranzo.pdf vs bona.pdf) serves which layout. Rather than
+  trust the filename/URL, this parser inspects each PDF's table and detects
+  which layout it actually contains, then assigns the output keys
+  accordingly. This keeps the parser correct regardless of which file the
+  site puts which content in.
 """
 
 import json
@@ -36,6 +35,9 @@ BONA_URL    = "https://www.catholic.ac.kr/cms/etcResourceOpen.do?site=$cms$NYeyA
 PRANZO_PDF  = "catholic_pranzo.pdf"
 BONA_PDF    = "catholic_bona.pdf"
 DEFAULT_OUT = "latest.json"
+
+KCAL_RE = re.compile(r"^\d+\s*kcal$", re.IGNORECASE)
+MULTI_SECTION_KEYWORDS = ["천원의아침", "한식", "Global", "누들", "플러스코너", "석식"]
 
 
 # ── Download ───────────────────────────────────────────────────────────────
@@ -85,8 +87,8 @@ def extract_kcal(items: list) -> tuple:
     """Pop kcal token from item list; return (kcal_str, remaining_items)."""
     kcal, rest = "", []
     for item in items:
-        if re.match(r"^\d+kcal$", item):
-            kcal = item
+        if KCAL_RE.match(item):
+            kcal = re.sub(r"\s+", "", item)
         else:
             rest.append(item)
     return kcal, rest
@@ -100,158 +102,152 @@ def build_menu_str(items: list, kcal: str = "") -> str:
     return result + " "
 
 
-def _row_has_dates(row) -> bool:
-    """Return True if any cell in the row contains a MM/DD date pattern."""
-    return any(re.search(r"\d{2}/\d{2}", clean(c)) for c in row if c)
+# ── Table extraction ────────────────────────────────────────────────────────
+
+def extract_table_and_text(pdf_path: str) -> tuple:
+    import pdfplumber
+
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        raw_text = page.extract_text() or ""
+        tables = page.extract_tables()
+
+    if not tables:
+        raise ValueError(f"No tables found in {pdf_path}")
+    return tables[0], raw_text
 
 
-def detect_layout(table) -> str:
+def find_header_row(table: list) -> int:
     """
-    Return one of: 'new_normal', 'vacation', 'old_normal'.
-
-    Layout C (new_normal): title text in row 0, dates in row 1.
-    Layout B (vacation):   dates in row 0, row 3 is entirely empty/None.
-    Layout A (old_normal): dates in row 0, row 3 has kcal content.
+    Find the row that actually holds the date labels (MM/DD). Some PDFs put a
+    title-only row (no dates) before the real header row, so this can't be
+    assumed to always be row 0.
     """
-    if not _row_has_dates(table[0]) and len(table) > 1 and _row_has_dates(table[1]):
-        return "new_normal"
-    row3_empty = all(c is None or (isinstance(c, str) and not c.strip()) for c in table[3])
-    return "vacation" if row3_empty else "old_normal"
+    best_idx, best_count = None, 0
+    for idx, row in enumerate(table):
+        count = sum(1 for cell in row if cell and re.search(r"\d{2}/\d{2}", clean(cell)))
+        if count > best_count:
+            best_idx, best_count = idx, count
+    if best_idx is None:
+        raise ValueError("Could not find a header row with dates in PDF.")
+    return best_idx
 
 
-# ── Date / column helpers ──────────────────────────────────────────────────
-
-def parse_dates_from_row(row, raw_text) -> tuple:
+def parse_dates(table: list, raw_text: str, year_hint: str = None) -> tuple:
     """
-    Scan a header row for MM/DD patterns, infer the year, return
-    (dates: list[str], col_indices: list[int]).
+    Extract dates and holiday column indices from the header row.
+    Returns (dates, col_indices, holiday_indices, header_row_idx)
+
+    col_indices are the actual column positions for each date — these may not be
+    contiguous (e.g. during vacation weeks, label columns sit between data columns).
     """
-    year_match = re.search(r"(\d{4})\.", raw_text)
-    if year_match:
-        year = year_match.group(1)
+    header_idx = find_header_row(table)
+    header_row = table[header_idx]
+
+    if year_hint:
+        year = year_hint
     else:
-        # New-layout PDFs omit the year from the title; use current year
-        # but roll forward if the month looks ahead of today (e.g. parsing
-        # a December menu in January).
-        now = datetime.now()
-        year = str(now.year)
+        year_match = re.search(r"(\d{4})\.", raw_text)
+        year = year_match.group(1) if year_match else str(datetime.now().year)
 
     date_cols = []
-    for col_idx, cell in enumerate(row):
+    for col_idx, cell in enumerate(header_row):
         m = re.search(r"(\d{2})/(\d{2})", clean(cell))
         if m:
             date_cols.append((col_idx, f"{year}-{m.group(1)}-{m.group(2)}"))
 
     if not date_cols:
-        raise ValueError("Could not parse dates from PDF header row.")
+        raise ValueError("Could not parse dates from PDF header.")
 
-    return [d for _, d in date_cols], [c for c, _ in date_cols]
+    col_indices = [c for c, _ in date_cols]
+    dates = [d for _, d in date_cols]
 
-
-def find_holidays(table, col_indices, scan_rows) -> set:
-    """Return set of date-indices where '대체공휴일' appears."""
+    # Detect holidays by scanning the rows after the header for "대체공휴일"
     holiday_indices = set()
-    for row in scan_rows:
+    for row in table[header_idx + 1: header_idx + 6]:
         for i, col in enumerate(col_indices):
             if col < len(row) and row[col] and "대체공휴일" in str(row[col]):
                 holiday_indices.add(i)
-    return holiday_indices
+
+    return dates, col_indices, holiday_indices, header_idx
 
 
-def make_safe(table, col_indices, n_dates):
-    """Return safe(row_idx) -> list[n_dates cells]."""
-    def safe(row_idx):
-        if row_idx >= len(table):
-            return [None] * n_dates
-        row = table[row_idx]
+def make_day_cells(table, col_indices, n_dates):
+    """
+    Return a safe row accessor: safe(row_idx) -> list of n_dates cells.
+
+    Uses the actual column positions from col_indices rather than sequential
+    offsets — required when label columns sit between date columns (vacation weeks).
+    """
+    def day_cells(row):
         return [row[col] if col < len(row) else None for col in col_indices]
+
+    def safe(row_idx):
+        if row_idx < 0 or row_idx >= len(table):
+            return [None] * n_dates
+        return day_cells(table[row_idx])
+
     return safe
 
 
-# ── Layout C parser (new normal: 중식 + 석식 only) ─────────────────────────
-
-def parse_new_normal(table, raw_text) -> tuple:
+def merge_kcal_overflow_rows(table: list, col_indices: list) -> list:
     """
-    Layout C — 10-row table, title in row 0, dates in row 1.
-
-      ROW 00: title (주 간 메 뉴 표 / 가톨릭대 학생식당 1점)
-      ROW 01: header (구 분 | dates…)
-      ROW 02: 중식 - main dish
-      ROW 03: 중식 - rest part 1 (multiline)
-      ROW 04: 중식 - rest part 2 + section label (multiline)
-      ROW 05: 중식 - kcal
-      ROW 06: 석식 - main + first side (multiline)
-      ROW 07: 석식 - rest (multiline)
-      ROW 08: 석식 - kcal
-      ROW 09: footnotes
-
-    Returns (result: dict, dates: list)
+    Some merged cells (main dish + sides + kcal all on one logical line) wrap
+    onto what pdfplumber reports as a separate table row: a row that's empty
+    everywhere except one or two date columns holding a bare 'NNNkcal'
+    fragment. Fold that fragment back into the previous row's cell (as an
+    extra line) instead of leaving it stranded. The row is kept in place
+    (blanked out) rather than deleted so fixed row offsets elsewhere in the
+    parser stay valid.
     """
-    dates, col_indices = parse_dates_from_row(table[1], raw_text)
-    holiday_indices = find_holidays(table, col_indices, table[2:6])
-    safe = make_safe(table, col_indices, len(dates))
-    n = len(dates)
+    if not table or not col_indices:
+        return table
 
-    def no_menu():
-        return {d: "No Menu " for d in dates}
-
-    result = {
-        "Lunch": no_menu(),
-        "Dinner": no_menu(),
-    }
-
-    for i, date in enumerate(dates):
-        if i in holiday_indices:
-            result["Lunch"][date] = "No Menu"
-            result["Dinner"][date] = "No Menu"
-            continue
-
-        # 중식: main (row 2) + rest rows 3+4 merged + kcal (row 5)
-        main_lunch = clean(safe(2)[i])
-        rest_lunch  = cell_items(safe(3)[i]) + cell_items(safe(4)[i])
-        kcal_raw    = clean(safe(5)[i])
-        kcal_num    = re.sub(r"\D", "", kcal_raw)
-        kcal_str    = f"{kcal_num}kcal" if kcal_num else ""
-        all_lunch   = ([main_lunch] if main_lunch else []) + rest_lunch
-        result["Lunch"][date] = build_menu_str(all_lunch, kcal_str) if all_lunch else "No Menu "
-
-        # 석식: rows 6+7 merged + kcal (row 8)
-        rest_dinner = cell_items(safe(6)[i]) + cell_items(safe(7)[i])
-        kcal_raw    = clean(safe(8)[i])
-        kcal_num    = re.sub(r"\D", "", kcal_raw)
-        kcal_str    = f"{kcal_num}kcal" if kcal_num else ""
-        result["Dinner"][date] = build_menu_str(rest_dinner, kcal_str) if rest_dinner else "No Menu "
-
-    return result, dates
+    label_end = min(col_indices)
+    merged = [list(table[0])]
+    for row in table[1:]:
+        vals = [row[c] if c < len(row) else None for c in col_indices]
+        non_empty = [(i, v) for i, v in enumerate(vals) if v and str(v).strip()]
+        label_bits = [row[c] for c in range(label_end) if c < len(row)]
+        label_empty = not any(b and str(b).strip() for b in label_bits)
+        looks_like_overflow = (
+            non_empty
+            and len(non_empty) < len(col_indices)
+            and label_empty
+            and all(KCAL_RE.match(str(v).strip()) for _, v in non_empty)
+        )
+        if looks_like_overflow:
+            prev = merged[-1]
+            for i, v in non_empty:
+                col = col_indices[i]
+                if col >= len(prev):
+                    continue
+                old = (prev[col] or "").rstrip()
+                token = re.sub(r"\s+", "", str(v).strip())
+                prev[col] = f"{old}\n{token}" if old else token
+            merged.append([None] * len(row))
+        else:
+            merged.append(list(row))
+    return merged
 
 
-# ── Layout A/B parser (old normal + vacation: full pranzo menu) ────────────
+# ── Layout detection ─────────────────────────────────────────────────────────
 
-def parse_pranzo_ab(table, raw_text, vacation: bool) -> tuple:
-    """
-    Layouts A and B share the same row skeleton except where noted.
+def is_multi_section(table: list, col_indices: list, header_idx: int) -> bool:
+    label_end = min(col_indices) if col_indices else 0
+    hits = set()
+    for row in table[header_idx:]:
+        text = " ".join(str(row[c]) for c in range(min(label_end, len(row))) if row[c])
+        for kw in MULTI_SECTION_KEYWORDS:
+            if kw in text:
+                hits.add(kw)
+    return len(hits) >= 3
 
-    Layout A — old_normal:
-      ROW 00: header (dates)          ROW 07: Global Noodle - main
-      ROW 01: 천원의아침 - main        ROW 08: Global Noodle - rest
-      ROW 02: 천원의아침 - rest        ROW 09: Global Noodle - kcal
-      ROW 03: 천원의아침 - kcal        ROW 10: 플러스코너 - single item
-      ROW 04: 한식 - main              ROW 11: 석식 - main
-      ROW 05: 한식 - rest              ROW 12: 석식 - rest (kcal embedded)
-      ROW 06: 한식 - kcal
 
-    Layout B — vacation (row 3 empty,석식 gains explicit kcal row 13):
-      ROW 02: 천원의아침 - rest + kcal merged (no separate kcal row)
-      ROW 03: (empty)
-      ROW 11: 석식 - main
-      ROW 12: 석식 - rest
-      ROW 13: 석식 - kcal             (new row only in vacation layout)
+# ── Multi-section parser (Morning / Korean / Global Noodle / Plus Corner / Dinner) ─
 
-    Returns (result: dict, dates: list)
-    """
-    dates, col_indices = parse_dates_from_row(table[0], raw_text)
-    holiday_indices = find_holidays(table, col_indices, table[1:6])
-    safe = make_safe(table, col_indices, len(dates))
+def parse_multi_section(table, dates, col_indices, holiday_indices, header_idx) -> dict:
+    safe = make_day_cells(table, col_indices, len(dates))
 
     def no_menu():
         return {d: "No Menu " for d in dates}
@@ -278,125 +274,87 @@ def parse_pranzo_ab(table, raw_text, vacation: bool) -> tuple:
             all_items = ([main] if main else []) + rest
             result[key][date] = build_menu_str(all_items, kcal_str) if all_items else "No Menu"
 
-    if vacation:
-        # 천원의아침: kcal embedded in rest row 2; row 3 is empty
-        fill_section("Morning", safe(1), safe(2), [None] * len(dates))
-        fill_section("Pranzo-Korean",        safe(4), safe(5), safe(6))
-        fill_section("Pranzo-Global-Noodle", safe(7), safe(8), safe(9))
-        fill_section("Pranzo-Dinner",        safe(11), safe(12), safe(13))
-    else:
-        fill_section("Morning",              safe(1),  safe(2),  safe(3))
-        fill_section("Pranzo-Korean",        safe(4),  safe(5),  safe(6))
-        fill_section("Pranzo-Global-Noodle", safe(7),  safe(8),  safe(9))
-        # 석식: kcal embedded in rest row 12
-        fill_section("Pranzo-Dinner",        safe(11), safe(12), [None] * len(dates))
+    h = header_idx
+    # 천원의아침: title row, then items+kcal merged into one cell (no separate kcal row)
+    fill_section("Morning", safe(h + 1), safe(h + 2), [None] * len(dates))
+    # 한식 / Global Noodle / 석식: title row, items row, separate kcal row
+    fill_section("Pranzo-Korean",        safe(h + 4),  safe(h + 5),  safe(h + 6))
+    fill_section("Pranzo-Global-Noodle", safe(h + 7),  safe(h + 8),  safe(h + 9))
+    fill_section("Pranzo-Dinner",        safe(h + 11), safe(h + 12), safe(h + 13))
 
-    # 플러스코너: single item row 10 — same in both layouts
+    # 플러스코너: single item row, no kcal
     for i, date in enumerate(dates):
         if i in holiday_indices:
             result["Pranzo-Plus-Corner"][date] = "No Menu "
             continue
-        item = clean(safe(10)[i])
+        item = clean(safe(h + 10)[i])
         result["Pranzo-Plus-Corner"][date] = (item + " ") if item else "No Menu "
 
-    return result, dates
+    return result
 
 
-# ── Bona parser (layouts A/B only) ────────────────────────────────────────
+# ── Simple single-section parser (e.g. "ONE X PLATE" lunch) ─────────────────
 
-def parse_bona_ab(table, dates, col_indices, holiday_indices, vacation: bool) -> dict:
+def parse_simple_section(table, dates, col_indices, holiday_indices, header_idx) -> dict:
     """
-    Layout A — normal bona (5 rows):
-      ROW 00: header  ROW 01: main  ROW 02: rest  ROW 03: drink  ROW 04: kcal
-
-    Layout B — vacation bona (3 rows):
-      ROW 00: header  ROW 01: all items merged  ROW 02: kcal
+    A single dish per day, spread across several rows (main dish, then one
+    side item per row), terminated by a row where every date column holds a
+    bare kcal value. Row count varies week to week (different numbers of side
+    items), so the kcal row is located dynamically rather than assumed to sit
+    at a fixed offset.
     """
-    def day_cells(row):
-        return [row[col] if col < len(row) else None for col in col_indices]
+    safe = make_day_cells(table, col_indices, len(dates))
+    n = len(dates)
 
-    def safe(row_idx):
-        if row_idx >= len(table):
-            return [None] * len(dates)
-        return day_cells(table[row_idx])
+    kcal_row_idx = None
+    for idx in range(header_idx + 1, len(table)):
+        vals = safe(idx)
+        if len(vals) == n and all(v and KCAL_RE.match(str(v).strip()) for v in vals):
+            kcal_row_idx = idx
+            break
 
     result = {"Bona-Rice-Bowl": {d: "No Menu " for d in dates}}
+
+    items_by_col = [[] for _ in range(n)]
+    end_idx = kcal_row_idx if kcal_row_idx is not None else len(table)
+    for idx in range(header_idx + 1, end_idx):
+        row_vals = safe(idx)
+        for i, v in enumerate(row_vals):
+            items_by_col[i].extend(cell_items(v))
+
+    kcal_vals = safe(kcal_row_idx) if kcal_row_idx is not None else [None] * n
 
     for i, date in enumerate(dates):
         if i in holiday_indices:
             result["Bona-Rice-Bowl"][date] = "No Menu"
             continue
-
-        if vacation:
-            all_raw  = cell_items(safe(1)[i])
-            kcal_raw = clean(safe(2)[i])
-            kcal_num = re.sub(r"\D", "", kcal_raw)
-            kcal_str = f"{kcal_num}kcal" if kcal_num else ""
-            result["Bona-Rice-Bowl"][date] = (
-                build_menu_str(all_raw, kcal_str) if all_raw else "No Menu "
-            )
-        else:
-            main  = clean(safe(1)[i])
-            rest  = cell_items(safe(2)[i])
-            drink = clean(safe(3)[i])
-            kcal_raw = clean(safe(4)[i])
-            kcal_num = re.sub(r"\D", "", kcal_raw)
-            kcal_str = f"{kcal_num}kcal" if kcal_num else ""
-            all_items = ([main] if main else []) + rest + ([drink] if drink else [])
-            result["Bona-Rice-Bowl"][date] = (
-                build_menu_str(all_items, kcal_str) if all_items else "No Menu "
-            )
+        items = items_by_col[i]
+        kcal_raw = clean(kcal_vals[i]) if kcal_vals[i] else ""
+        kcal_num = re.sub(r"\D", "", kcal_raw)
+        kcal_str = f"{kcal_num}kcal" if kcal_num else ""
+        result["Bona-Rice-Bowl"][date] = build_menu_str(items, kcal_str) if items else "No Menu "
 
     return result
 
 
-# ── Top-level parsers ──────────────────────────────────────────────────────
+# ── Top-level per-file parse ─────────────────────────────────────────────────
 
-def parse_pranzo(pdf_path: str) -> tuple:
-    """Open pranzo PDF, detect layout, dispatch to the right parser."""
-    import pdfplumber
+def parse_menu_pdf(pdf_path: str, year_hint: str = None) -> tuple:
+    """
+    Parse a weekly menu PDF, auto-detecting whether it's the multi-section
+    layout or the simple single-section layout.
+    Returns (kind, result_dict, dates, raw_text) where kind is 'multi' or 'simple'.
+    """
+    table, raw_text = extract_table_and_text(pdf_path)
+    dates, col_indices, holiday_indices, header_idx = parse_dates(table, raw_text, year_hint)
+    table = merge_kcal_overflow_rows(table, col_indices)
 
-    with pdfplumber.open(pdf_path) as pdf:
-        page = pdf.pages[0]
-        raw_text = page.extract_text() or ""
-        tables = page.extract_tables()
-
-    if not tables:
-        raise ValueError(f"No tables found in {pdf_path}")
-
-    table = tables[0]
-    layout = detect_layout(table)
-    print(f"Detected layout '{layout}' for pranzo PDF.")
-
-    if layout == "new_normal":
-        return parse_new_normal(table, raw_text)
+    if is_multi_section(table, col_indices, header_idx):
+        result = parse_multi_section(table, dates, col_indices, holiday_indices, header_idx)
+        return "multi", result, dates, raw_text
     else:
-        return parse_pranzo_ab(table, raw_text, vacation=(layout == "vacation"))
-
-
-def parse_bona(pdf_path: str, dates: list, col_indices: list, holiday_indices: set,
-               skip: bool = False) -> dict:
-    """
-    Open bona PDF and parse it.
-    Pass skip=True when the layout is new_normal (bona is redundant).
-    """
-    if skip:
-        return {}
-
-    import pdfplumber
-
-    with pdfplumber.open(pdf_path) as pdf:
-        page = pdf.pages[0]
-        tables = page.extract_tables()
-
-    if not tables:
-        raise ValueError(f"No tables found in {pdf_path}")
-
-    table = tables[0]
-    vacation = len(table) <= 3
-    if vacation:
-        print("Detected vacation/break layout for bona PDF.")
-    return parse_bona_ab(table, dates, col_indices, holiday_indices, vacation)
+        result = parse_simple_section(table, dates, col_indices, holiday_indices, header_idx)
+        return "simple", result, dates, raw_text
 
 
 # ── Entry point ────────────────────────────────────────────────────────────
@@ -413,26 +371,29 @@ def main():
 
     try:
         print(f"Parsing: {pranzo_path}")
-        pranzo_data, dates = parse_pranzo(pranzo_path)
+        kind_a, data_a, dates_a, text_a = parse_menu_pdf(pranzo_path)
 
-        # Re-open pranzo to get col_indices and holiday_indices for bona
-        import pdfplumber
-        with pdfplumber.open(pranzo_path) as pdf:
-            table    = pdf.pages[0].extract_tables()[0]
-            raw_text = pdf.pages[0].extract_text() or ""
+        # Reuse the year from whichever PDF's text actually contains it, so
+        # both files agree on the same year for their date strings.
+        year_hint = None
+        m = re.search(r"(\d{4})\.", text_a)
+        if m:
+            year_hint = m.group(1)
 
-        layout = detect_layout(table)
+        print(f"Parsing: {bona_path}")
+        kind_b, data_b, dates_b, text_b = parse_menu_pdf(bona_path, year_hint=year_hint)
 
-        if layout == "new_normal":
-            # Both PDFs carry the same menu; bona is not a separate cafeteria
-            print(f"Skipping bona PDF (new_normal layout — same menu as pranzo).")
-            bona_data = {}
-        else:
-            header_row = table[1] if layout == "new_normal" else table[0]
-            _, col_indices = parse_dates_from_row(header_row, raw_text)
-            holiday_indices = find_holidays(table, col_indices, table[1:6])
-            print(f"Parsing: {bona_path}")
-            bona_data = parse_bona(bona_path, dates, col_indices, holiday_indices)
+        if kind_a == kind_b:
+            raise ValueError(
+                f"Both PDFs were detected as '{kind_a}' layout — expected one "
+                "multi-section menu and one simple menu. The source PDFs may "
+                "have changed format again; parser needs another look."
+            )
+
+        multi_data, simple_data, dates = (
+            (data_a, data_b, dates_a) if kind_a == "multi" else (data_b, data_a, dates_b)
+        )
+        print(f"Detected layouts -> {pranzo_path}: {kind_a}, {bona_path}: {kind_b}")
 
     finally:
         if auto_download:
@@ -441,7 +402,8 @@ def main():
                     os.remove(path)
                     print(f"Deleted  -> {path}")
 
-    data = {**pranzo_data, **bona_data}
+    # Merge both results
+    data = {**multi_data, **simple_data}
 
     save_json(data, out_path)
     save_json(data, get_archive_path(dates))
