@@ -20,6 +20,14 @@ Note on layout auto-detection:
   which layout it actually contains, then assigns the output keys
   accordingly. This keeps the parser correct regardless of which file the
   site puts which content in.
+
+Note on the "collapsed" simple layout (as of 2026-09):
+  The Bona PDF dropped its per-column MM/DD date header entirely. The only
+  date information left is the page title (e.g. "2026.09.14 - 09.17"), and
+  each day's dish + sides + drink are merged into a single table cell, with
+  a separate row below holding the real per-day kcal totals. See
+  parse_dates() and parse_collapsed_simple_section() for how this is
+  detected and handled.
 """
 
 import json
@@ -37,6 +45,8 @@ BONA_PDF    = "catholic_bona.pdf"
 DEFAULT_OUT = "latest.json"
 
 KCAL_RE = re.compile(r"^\d+\s*kcal$", re.IGNORECASE)
+STRAY_NUMERAL_RE = re.compile(r"^\d+\s*(kcal)?$", re.IGNORECASE)
+DATE_RANGE_RE = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})\s*-\s*(\d{2})\.(\d{2})")
 MULTI_SECTION_KEYWORDS = ["천원의아침", "한식", "Global", "누들", "플러스코너", "석식"]
 
 
@@ -117,32 +127,55 @@ def extract_table_and_text(pdf_path: str) -> tuple:
     return tables[0], raw_text
 
 
-def find_header_row(table: list) -> int:
+def find_header_row(table: list):
     """
     Find the row that actually holds the date labels (MM/DD). Some PDFs put a
     title-only row (no dates) before the real header row, so this can't be
     assumed to always be row 0.
+
+    Returns None if no such row exists at all (see: the collapsed Bona
+    layout, which drops the per-column date header entirely and only has
+    date info in the page title).
     """
     best_idx, best_count = None, 0
     for idx, row in enumerate(table):
         count = sum(1 for cell in row if cell and re.search(r"\d{2}/\d{2}", clean(cell)))
         if count > best_count:
             best_idx, best_count = idx, count
-    if best_idx is None:
-        raise ValueError("Could not find a header row with dates in PDF.")
     return best_idx
+
+
+def parse_title_date_range(raw_text: str):
+    """
+    Extract the start date from the page title, e.g.
+    '주간메뉴표 2026.09.14 - 09.17' -> (2026, 9, 14).
+
+    Only the start date is used - the end date in the title has been
+    observed to undercount the actual number of day-columns in the table
+    (e.g. title says '-09.17' but there are 5 columns through 09/18), so
+    dates are derived by walking forward from the start date, one per
+    detected data column, instead of trusting the range's end.
+    """
+    m = DATE_RANGE_RE.search(raw_text)
+    if not m:
+        return None
+    year, sm, sd, _em, _ed = m.groups()
+    return int(year), int(sm), int(sd)
 
 
 def parse_dates(table: list, raw_text: str, year_hint: str = None) -> tuple:
     """
     Extract dates and holiday column indices from the header row.
-    Returns (dates, col_indices, holiday_indices, header_row_idx)
+    Returns (dates, col_indices, holiday_indices, header_row_idx, collapsed)
 
     col_indices are the actual column positions for each date — these may not be
     contiguous (e.g. during vacation weeks, label columns sit between data columns).
+
+    collapsed is True when there was no per-column date header at all (the
+    newer Bona layout) and the caller must use parse_collapsed_simple_section
+    instead of parse_simple_section.
     """
     header_idx = find_header_row(table)
-    header_row = table[header_idx]
 
     if year_hint:
         year = year_hint
@@ -150,17 +183,53 @@ def parse_dates(table: list, raw_text: str, year_hint: str = None) -> tuple:
         year_match = re.search(r"(\d{4})\.", raw_text)
         year = year_match.group(1) if year_match else str(datetime.now().year)
 
-    date_cols = []
-    for col_idx, cell in enumerate(header_row):
-        m = re.search(r"(\d{2})/(\d{2})", clean(cell))
-        if m:
-            date_cols.append((col_idx, f"{year}-{m.group(1)}-{m.group(2)}"))
+    if header_idx is not None:
+        header_row = table[header_idx]
 
-    if not date_cols:
-        raise ValueError("Could not parse dates from PDF header.")
+        date_cols = []
+        for col_idx, cell in enumerate(header_row):
+            m = re.search(r"(\d{2})/(\d{2})", clean(cell))
+            if m:
+                date_cols.append((col_idx, f"{year}-{m.group(1)}-{m.group(2)}"))
 
-    col_indices = [c for c, _ in date_cols]
-    dates = [d for _, d in date_cols]
+        if not date_cols:
+            raise ValueError("Could not parse dates from PDF header.")
+
+        col_indices = [c for c, _ in date_cols]
+        dates = [d for _, d in date_cols]
+        collapsed = False
+    else:
+        # Collapsed layout (current Bona PDF): row 0 merges dish+sides+drink
+        # into one cell per day, with a stray kcal-shaped leading token that
+        # doesn't match the real total (observed to equal the pranzo PDF's
+        # dinner-row kcal instead - looks like a template/text-extraction
+        # artifact, not real data). Row 1 holds the true per-day kcal totals
+        # and is reliably complete/well-formatted for every data column, so
+        # it's used to *locate* the data columns even though the menu
+        # content itself comes from row 0.
+        parsed = parse_title_date_range(raw_text)
+        if not parsed:
+            raise ValueError(
+                "Could not find a header row with dates in PDF, and no "
+                "title date range to fall back on."
+            )
+        title_year, start_month, start_day = parsed
+
+        if len(table) < 2:
+            raise ValueError("Collapsed-layout PDF missing expected kcal row.")
+
+        kcal_row = table[1]
+        col_indices = [
+            i for i, cell in enumerate(kcal_row)
+            if cell and KCAL_RE.match(clean(cell))
+        ]
+        if not col_indices:
+            raise ValueError("Could not locate data columns in collapsed-layout PDF.")
+
+        start = datetime(title_year, start_month, start_day)
+        dates = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(len(col_indices))]
+        header_idx = 0
+        collapsed = True
 
     # Detect holidays by scanning the rows after the header for "대체공휴일"
     holiday_indices = set()
@@ -169,7 +238,7 @@ def parse_dates(table: list, raw_text: str, year_hint: str = None) -> tuple:
             if col < len(row) and row[col] and "대체공휴일" in str(row[col]):
                 holiday_indices.add(i)
 
-    return dates, col_indices, holiday_indices, header_idx
+    return dates, col_indices, holiday_indices, header_idx, collapsed
 
 
 def make_day_cells(table, col_indices, n_dates):
@@ -337,16 +406,56 @@ def parse_simple_section(table, dates, col_indices, holiday_indices, header_idx)
     return result
 
 
+def parse_collapsed_simple_section(table, dates, col_indices, holiday_indices) -> dict:
+    """
+    Collapsed Bona layout (as of 2026-09): row 0's cells hold the full day
+    (dish + sides + drink) merged into one block, prefixed by a stray
+    kcal-shaped leading token that does NOT match the visible total
+    (observed to equal the pranzo PDF's dinner-row kcal instead - looks like
+    a template/text-extraction artifact, not real data). Real dish names are
+    never bare numerals, so any leading numeral-only line is dropped. Row 1
+    supplies the actual per-day kcal total.
+
+    NOTE: this assumes the kcal row is always exactly one row below the
+    merged content row (row 1). If a future format inserts something between
+    them (e.g. a holiday note row), this will need the same dynamic kcal-row
+    search that parse_simple_section already does.
+    """
+    result = {"Bona-Rice-Bowl": {d: "No Menu " for d in dates}}
+    header_row = table[0]
+    kcal_row = table[1] if len(table) > 1 else [None] * len(header_row)
+
+    for i, (date, col) in enumerate(zip(dates, col_indices)):
+        if i in holiday_indices:
+            result["Bona-Rice-Bowl"][date] = "No Menu"
+            continue
+        items = cell_items(header_row[col] if col < len(header_row) else None)
+        if items and STRAY_NUMERAL_RE.match(items[0]):
+            items = items[1:]
+        kcal_raw = clean(kcal_row[col]) if col < len(kcal_row) and kcal_row[col] else ""
+        kcal_num = re.sub(r"\D", "", kcal_raw)
+        kcal_str = f"{kcal_num}kcal" if kcal_num else ""
+        result["Bona-Rice-Bowl"][date] = build_menu_str(items, kcal_str) if items else "No Menu "
+
+    return result
+
+
 # ── Top-level per-file parse ─────────────────────────────────────────────────
 
 def parse_menu_pdf(pdf_path: str, year_hint: str = None) -> tuple:
     """
     Parse a weekly menu PDF, auto-detecting whether it's the multi-section
-    layout or the simple single-section layout.
+    layout, the simple single-section layout, or the collapsed
+    single-section layout (no per-column date header).
     Returns (kind, result_dict, dates, raw_text) where kind is 'multi' or 'simple'.
     """
     table, raw_text = extract_table_and_text(pdf_path)
-    dates, col_indices, holiday_indices, header_idx = parse_dates(table, raw_text, year_hint)
+    dates, col_indices, holiday_indices, header_idx, collapsed = parse_dates(table, raw_text, year_hint)
+
+    if collapsed:
+        result = parse_collapsed_simple_section(table, dates, col_indices, holiday_indices)
+        return "simple", result, dates, raw_text
+
     table = merge_kcal_overflow_rows(table, col_indices)
 
     if is_multi_section(table, col_indices, header_idx):
@@ -395,20 +504,26 @@ def main():
         )
         print(f"Detected layouts -> {pranzo_path}: {kind_a}, {bona_path}: {kind_b}")
 
-    finally:
+        # Merge both results
+        data = {**multi_data, **simple_data}
+
+        save_json(data, out_path)
+        save_json(data, get_archive_path(dates))
+
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+
+    except Exception:
         if auto_download:
-            for path in [pranzo_path, bona_path]:
-                if os.path.exists(path):
-                    os.remove(path)
-                    print(f"Deleted  -> {path}")
+            print(f"PARSE FAILED — keeping {pranzo_path} and {bona_path} for inspection")
+        raise
 
-    # Merge both results
-    data = {**multi_data, **simple_data}
-
-    save_json(data, out_path)
-    save_json(data, get_archive_path(dates))
-
-    print(json.dumps(data, ensure_ascii=False, indent=2))
+    # Only reached on success (the except block above re-raises on failure),
+    # so the downloaded PDFs are only cleaned up once parsing actually worked.
+    if auto_download:
+        for path in [pranzo_path, bona_path]:
+            if os.path.exists(path):
+                os.remove(path)
+                print(f"Deleted  -> {path}")
 
 
 if __name__ == "__main__":
